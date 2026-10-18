@@ -22,7 +22,9 @@ export default function AppRoutes() {
         </Route>
 
         {/* OWNER ROLE */}
-        <Route></Route>
+        <Route>
+            <Route path='' element={} />
+        </Route>
 
         </Routes>
         </BrowserRouter>
