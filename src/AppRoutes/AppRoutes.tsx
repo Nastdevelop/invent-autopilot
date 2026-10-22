@@ -16,14 +16,19 @@ export default function AppRoutes() {
 
         {/* MANAGER ROLE */}
         <Route>
-            <Route path='' element={} />
-            <Route path='' element={} />
-            <Route path='' element={} />
+            <Route path='/manager/dashboard' element={} />
+            <Route path='/manager/stocklist' element={} />
+            <Route path='/manager/outstock' element={} />
+            <Route path='/manager/instock' element={} />
         </Route>
 
         {/* OWNER ROLE */}
         <Route>
-            <Route path='' element={} />
+            <Route path='/owner/akun' element={} />
+            <Route path='/owner/stocklist' element={} />
+            <Route path='/owner/outstock' element={} />
+            <Route path='/owner/instock' element={} />
+            <Route path='/owner/akun' element={} />
         </Route>
 
         </Routes>
