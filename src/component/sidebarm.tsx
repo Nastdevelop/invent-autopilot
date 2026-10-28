@@ -11,7 +11,7 @@ export default function Sidebar() {
 
     return (
         <div className="bg-blue-200 absolute z-10 flex flex-col min-h-screen pt-10 px-2 w-[250px] gap-1">
-            {dataside.map((list) => (
+            {dataside.map((list) => ( 
                 <NavLink to={list.link} key={list.id} className={({ isActive }) =>
                         `text-lg font-semibold py-1 px-2 rounded-[7px] transition-colors ${
                             isActive
