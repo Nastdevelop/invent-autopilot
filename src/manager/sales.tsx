@@ -19,6 +19,7 @@ import Modal from "../components/Modal"
 import ConfirmDialog from "../components/ConfirmDialog"
 import Pagination from "../components/Pagination"
 import { useAppStore } from "../store/useAppStore"
+import { useAuth } from "../auth/useAuth"
 import type { Sale, SaleStatus } from "../types/api"
 import { angka, rupiah, tanggalWaktu } from "../lib/format"
 import { paginate } from "../lib/selectors"
@@ -58,6 +59,8 @@ export default function Sales() {
   const cancelSale = useAppStore((state) => state.cancelSale)
   const deleteSale = useAppStore((state) => state.deleteSale)
   const notify = useAppStore((state) => state.notify)
+  const { user } = useAuth()
+  const isManager = user?.role === "MANAGER"
 
   const activeProducts = useMemo(
     () => products.filter((product) => product.status === "ACTIVE"),
@@ -204,7 +207,7 @@ export default function Sales() {
             <Eye size={13} />
             Detail
           </button>
-          {sale.status === "PENDING" ? (
+          {sale.status === "PENDING" && isManager ? (
             <>
               <button
                 type="button"
@@ -247,12 +250,20 @@ export default function Sales() {
       <PageHeader
         eyebrow="Transaksi"
         title="Penjualan"
-        description="Buat penjualan, konfirmasi untuk memotong stok, atau batalkan penjualan sukses dengan alasan."
+        description={
+          isManager
+            ? "Buat penjualan, konfirmasi untuk memotong stok, atau batalkan penjualan sukses dengan alasan."
+            : "Pantau seluruh penjualan manager dan batalkan penjualan sukses bila diperlukan."
+        }
         actions={
-          <button type="button" onClick={openBuilder} className={primaryButton}>
-            <Plus size={16} />
-            Penjualan baru
-          </button>
+          isManager ? (
+            <button type="button" onClick={openBuilder} className={primaryButton}>
+              <Plus size={16} />
+              Penjualan baru
+            </button>
+          ) : (
+            <Badge tone="accent">Mode owner</Badge>
+          )
         }
       />
 
@@ -294,12 +305,18 @@ export default function Sales() {
             <EmptyState
               icon={<ShoppingCart size={24} strokeWidth={1.9} />}
               title="Belum ada penjualan"
-              description="Buat penjualan baru untuk mulai mencatat transaksi."
+              description={
+                isManager
+                  ? "Buat penjualan baru untuk mulai mencatat transaksi."
+                  : "Belum ada penjualan yang dicatat manager."
+              }
               action={
-                <button type="button" onClick={openBuilder} className={primaryButton}>
-                  <Plus size={15} />
-                  Penjualan baru
-                </button>
+                isManager ? (
+                  <button type="button" onClick={openBuilder} className={primaryButton}>
+                    <Plus size={15} />
+                    Penjualan baru
+                  </button>
+                ) : undefined
               }
             />
           }

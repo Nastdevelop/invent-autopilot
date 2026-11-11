@@ -1,5 +1,5 @@
 import { useMemo, useState, type FormEvent } from "react"
-import { PackageOpen, Pencil, Plus, Search } from "lucide-react"
+import { CircleCheck, PackageOpen, Pencil, Plus, Search, Trash2 } from "lucide-react"
 import PageHeader from "../components/PageHeader"
 import StatCard from "../components/StatCard"
 import Badge from "../components/Badge"
@@ -7,12 +7,21 @@ import DataTable, { type Column } from "../components/DataTable"
 import EmptyState from "../components/EmptyState"
 import Field from "../components/Field"
 import Modal from "../components/Modal"
+import ConfirmDialog from "../components/ConfirmDialog"
 import Pagination from "../components/Pagination"
 import { useAppStore, type ProductInput } from "../store/useAppStore"
+import { useAuth } from "../auth/useAuth"
 import type { Product } from "../types/api"
 import { angka, rupiah } from "../lib/format"
 import { paginate } from "../lib/selectors"
-import { inputClass, primaryButton, secondaryButton, selectClass, smallButton } from "../lib/ui"
+import {
+  inputClass,
+  primaryButton,
+  secondaryButton,
+  selectClass,
+  smallButton,
+  smallDangerButton,
+} from "../lib/ui"
 
 interface FormState {
   sku: string
@@ -45,13 +54,18 @@ export default function Products() {
   const currentUserId = useAppStore((state) => state.currentUserId)
   const createProduct = useAppStore((state) => state.createProduct)
   const updateProduct = useAppStore((state) => state.updateProduct)
+  const approveProduct = useAppStore((state) => state.approveProduct)
+  const deleteProduct = useAppStore((state) => state.deleteProduct)
   const notify = useAppStore((state) => state.notify)
+  const { user } = useAuth()
+  const isOwner = user?.role === "OWNER"
 
   const [search, setSearch] = useState("")
   const [status, setStatus] = useState<"ALL" | Product["status"]>("ALL")
   const [page, setPage] = useState(1)
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState<Product | null>(null)
+  const [deleting, setDeleting] = useState<Product | null>(null)
   const [form, setForm] = useState<FormState>(emptyForm)
 
   const filtered = useMemo(() => {
@@ -107,6 +121,24 @@ export default function Products() {
     if (result.ok) setOpen(false)
   }
 
+  const onApprove = (product: Product) => {
+    const result = approveProduct(product.id)
+    notify(
+      result.message ?? (result.ok ? "Produk disetujui." : "Gagal menyetujui produk."),
+      result.ok ? "success" : "error",
+    )
+  }
+
+  const onDelete = () => {
+    if (!deleting) return
+    const result = deleteProduct(deleting.id)
+    notify(
+      result.message ?? (result.ok ? "Produk dihapus." : "Gagal menghapus produk."),
+      result.ok ? "success" : "error",
+    )
+    if (result.ok) setDeleting(null)
+  }
+
   const columns: Column<Product>[] = [
     {
       key: "product",
@@ -158,14 +190,41 @@ export default function Products() {
       align: "right",
       render: (product) => {
         const canEdit =
-          product.status === "PENDING_APPROVAL" && product.createdBy === currentUserId
-        return canEdit ? (
-          <button type="button" onClick={() => openEdit(product)} className={smallButton}>
-            <Pencil size={13} />
-            Edit
-          </button>
-        ) : (
-          <span className="text-xs text-ink-soft/70">—</span>
+          isOwner ||
+          (product.status === "PENDING_APPROVAL" && product.createdBy === currentUserId)
+        const canApprove = isOwner && product.status === "PENDING_APPROVAL"
+        if (!canEdit && !canApprove && !isOwner) {
+          return <span className="text-xs text-ink-soft/70">—</span>
+        }
+        return (
+          <div className="flex flex-wrap items-center justify-end gap-1.5">
+            {canApprove ? (
+              <button
+                type="button"
+                onClick={() => onApprove(product)}
+                className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-xs font-semibold text-emerald-700 transition-colors hover:bg-emerald-100"
+              >
+                <CircleCheck size={13} />
+                Setujui
+              </button>
+            ) : null}
+            {canEdit ? (
+              <button type="button" onClick={() => openEdit(product)} className={smallButton}>
+                <Pencil size={13} />
+                Edit
+              </button>
+            ) : null}
+            {isOwner ? (
+              <button
+                type="button"
+                onClick={() => setDeleting(product)}
+                className={smallDangerButton}
+              >
+                <Trash2 size={13} />
+                Hapus
+              </button>
+            ) : null}
+          </div>
         )
       },
     },
@@ -176,7 +235,11 @@ export default function Products() {
       <PageHeader
         eyebrow="Katalog"
         title="Produk"
-        description="Tambah produk baru, pantau stok, dan lengkapi data jual. Produk baru manager menunggu persetujuan owner."
+        description={
+          isOwner
+            ? "Kelola seluruh produk, setujui produk baru dari manager, dan hapus produk tanpa riwayat."
+            : "Tambah produk baru, pantau stok, dan lengkapi data jual. Produk baru manager menunggu persetujuan owner."
+        }
         actions={
           <button type="button" onClick={openCreate} className={primaryButton}>
             <Plus size={16} />
@@ -273,8 +336,12 @@ export default function Products() {
         title={editing ? "Edit produk" : "Tambah produk"}
         description={
           editing
-            ? "Perubahan hanya bisa dilakukan selama produk masih menunggu persetujuan."
-            : "Produk akan berstatus menunggu persetujuan owner sebelum bisa dipakai transaksi."
+            ? isOwner
+              ? "Perubahan produk owner langsung tersimpan."
+              : "Perubahan hanya bisa dilakukan selama produk masih menunggu persetujuan."
+            : isOwner
+              ? "Produk yang dibuat owner langsung aktif dan bisa dipakai transaksi."
+              : "Produk akan berstatus menunggu persetujuan owner sebelum bisa dipakai transaksi."
         }
         footer={
           <>
@@ -282,7 +349,7 @@ export default function Products() {
               Batal
             </button>
             <button type="submit" form="product-form" className={primaryButton}>
-              {editing ? "Simpan perubahan" : "Kirim produk"}
+              {editing ? "Simpan perubahan" : isOwner ? "Tambah produk" : "Kirim produk"}
             </button>
           </>
         }
@@ -356,6 +423,19 @@ export default function Products() {
           </p>
         </form>
       </Modal>
+
+      <ConfirmDialog
+        open={deleting !== null}
+        onClose={() => setDeleting(null)}
+        onConfirm={onDelete}
+        title="Hapus produk?"
+        description="Produk hanya bisa dihapus kalau belum punya riwayat barang masuk, penjualan, atau adjustment."
+        confirmLabel="Hapus produk"
+      >
+        <p className="rounded-xl border border-line bg-surface-muted px-4 py-3 text-sm text-ink">
+          {deleting ? `${deleting.name} · ${deleting.sku}` : ""}
+        </p>
+      </ConfirmDialog>
     </div>
   )
 }

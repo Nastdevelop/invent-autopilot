@@ -66,12 +66,16 @@ interface AppState {
   dismissToast: () => void
   createProduct: (input: ProductInput) => ActionResult
   updateProduct: (id: number, input: ProductInput) => ActionResult
+  approveProduct: (id: number) => ActionResult
+  deleteProduct: (id: number) => ActionResult
   stockIn: (input: StockInInput) => ActionResult
   createSale: (items: SaleInputItem[]) => ActionResult
   confirmSale: (id: number) => ActionResult
   cancelSale: (id: number, reason: string) => ActionResult
   deleteSale: (id: number) => ActionResult
   createAdjustment: (input: AdjustmentInput) => ActionResult
+  approveAdjustment: (id: number) => ActionResult
+  rejectAdjustment: (id: number) => ActionResult
   resetMock: () => void
 }
 
@@ -127,7 +131,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     const state = get()
     const user = activeUser(state)
     if (!user) return fail("Sesi tidak ditemukan. Silakan login ulang.")
-    if (user.role !== "MANAGER") return fail("Hanya manager yang bisa menambah produk.")
 
     const sku = input.sku.trim().toUpperCase()
     const name = input.name.trim()
@@ -144,6 +147,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       return fail(`SKU ${sku} sudah dipakai produk lain.`)
     }
 
+    const isOwner = user.role === "OWNER"
     const product: Product = {
       id: nextId(state.products),
       sku,
@@ -154,13 +158,18 @@ export const useAppStore = create<AppState>((set, get) => ({
       avgCost: 0,
       stock: 0,
       minStock: input.minStock,
-      status: "PENDING_APPROVAL",
+      status: isOwner ? "ACTIVE" : "PENDING_APPROVAL",
       createdBy: user.id,
       createdAt: new Date().toISOString(),
     }
 
     set({ products: [product, ...state.products] })
-    return { ok: true, message: "Produk dikirim dan menunggu persetujuan owner." }
+    return {
+      ok: true,
+      message: isOwner
+        ? "Produk ditambahkan dan langsung aktif."
+        : "Produk dikirim dan menunggu persetujuan owner.",
+    }
   },
 
   updateProduct: (id, input) => {
@@ -169,11 +178,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!user) return fail("Sesi tidak ditemukan. Silakan login ulang.")
     const product = state.products.find((item) => item.id === id)
     if (!product) return fail("Produk tidak ditemukan.")
-    if (
-      user.role !== "MANAGER" ||
-      product.createdBy !== user.id ||
-      product.status !== "PENDING_APPROVAL"
-    ) {
+    const canEdit =
+      user.role === "OWNER" ||
+      (user.role === "MANAGER" &&
+        product.createdBy === user.id &&
+        product.status === "PENDING_APPROVAL")
+    if (!canEdit) {
       return fail("Hanya produk milikmu yang masih menunggu persetujuan yang bisa diubah.")
     }
 
@@ -206,6 +216,45 @@ export const useAppStore = create<AppState>((set, get) => ({
       products: state.products.map((item) => (item.id === id ? updated : item)),
     })
     return { ok: true, message: "Produk diperbarui." }
+  },
+
+  approveProduct: (id) => {
+    const state = get()
+    const user = activeUser(state)
+    if (!user) return fail("Sesi tidak ditemukan. Silakan login ulang.")
+    if (user.role !== "OWNER") return fail("Hanya owner yang bisa menyetujui produk.")
+    const product = state.products.find((item) => item.id === id)
+    if (!product) return fail("Produk tidak ditemukan.")
+    if (product.status !== "PENDING_APPROVAL") return fail("Produk ini tidak sedang menunggu persetujuan.")
+
+    set({
+      products: state.products.map((item) =>
+        item.id === id ? { ...item, status: "ACTIVE" } : item,
+      ),
+    })
+    return { ok: true, message: `Produk ${product.name} disetujui dan sekarang aktif.` }
+  },
+
+  deleteProduct: (id) => {
+    const state = get()
+    const user = activeUser(state)
+    if (!user) return fail("Sesi tidak ditemukan. Silakan login ulang.")
+    if (user.role !== "OWNER") return fail("Hanya owner yang bisa menghapus produk.")
+    const product = state.products.find((item) => item.id === id)
+    if (!product) return fail("Produk tidak ditemukan.")
+
+    const hasHistory =
+      state.stockIns.some((item) => item.productId === id) ||
+      state.sales.some((sale) => sale.items.some((item) => item.productId === id)) ||
+      state.adjustments.some((item) => item.productId === id) ||
+      state.movements.some((item) => item.productId === id)
+
+    if (hasHistory) {
+      return fail("Produk sudah punya riwayat stok atau transaksi, jadi tidak bisa dihapus.")
+    }
+
+    set({ products: state.products.filter((item) => item.id !== id) })
+    return { ok: true, message: `Produk ${product.name} dihapus.` }
   },
 
   stockIn: (input) => {
@@ -453,22 +502,124 @@ export const useAppStore = create<AppState>((set, get) => ({
     const reason = input.reason.trim()
     if (!reason) return fail("Alasan wajib diisi.")
 
+    const isOwner = user.role === "OWNER"
+    const now = new Date().toISOString()
+    if (isOwner && input.qtyChange < 0 && product.stock + input.qtyChange < 0) {
+      return fail(`Stok ${product.name} tidak cukup. Sisa ${product.stock}.`)
+    }
+
     const adjustment: Adjustment = {
       id: nextId(state.adjustments),
       productId: product.id,
       type: input.type,
       qtyChange: input.qtyChange,
       reason,
-      status: "PENDING",
-      lossValue: null,
+      status: isOwner ? "APPROVED" : "PENDING",
+      lossValue:
+        isOwner && input.type === "DAMAGED"
+          ? Math.abs(input.qtyChange) * product.avgCost
+          : null,
       requestedBy: user.id,
-      decidedBy: null,
-      createdAt: new Date().toISOString(),
-      decidedAt: null,
+      decidedBy: isOwner ? user.id : null,
+      createdAt: now,
+      decidedAt: isOwner ? now : null,
+    }
+
+    if (isOwner) {
+      const movement: StockMovement = {
+        id: nextId(state.movements),
+        type: input.type === "DAMAGED" ? "DAMAGED" : "ADJUSTMENT",
+        quantityChange: input.qtyChange,
+        productId: product.id,
+        reference: { type: "ADJUSTMENT", id: adjustment.id },
+        reason,
+        createdBy: user.id,
+        createdAt: now,
+      }
+      set({
+        adjustments: [adjustment, ...state.adjustments],
+        products: state.products.map((item) =>
+          item.id === product.id
+            ? { ...item, stock: item.stock + input.qtyChange }
+            : item,
+        ),
+        movements: [movement, ...state.movements],
+      })
+      return { ok: true, message: "Adjustment langsung disetujui dan stok diperbarui." }
     }
 
     set({ adjustments: [adjustment, ...state.adjustments] })
     return { ok: true, message: "Adjustment dikirim dan menunggu persetujuan owner." }
+  },
+
+  approveAdjustment: (id) => {
+    const state = get()
+    const user = activeUser(state)
+    if (!user) return fail("Sesi tidak ditemukan. Silakan login ulang.")
+    if (user.role !== "OWNER") return fail("Hanya owner yang bisa menyetujui adjustment.")
+    const adjustment = state.adjustments.find((item) => item.id === id)
+    if (!adjustment) return fail("Adjustment tidak ditemukan.")
+    if (adjustment.status !== "PENDING") return fail("Adjustment ini tidak sedang menunggu persetujuan.")
+    const product = state.products.find((item) => item.id === adjustment.productId)
+    if (!product) return fail("Produk adjustment tidak ditemukan.")
+    if (adjustment.qtyChange < 0 && product.stock + adjustment.qtyChange < 0) {
+      return fail(`Stok ${product.name} tidak cukup. Sisa ${product.stock}.`)
+    }
+
+    const now = new Date().toISOString()
+    const movement: StockMovement = {
+      id: nextId(state.movements),
+      type: adjustment.type === "DAMAGED" ? "DAMAGED" : "ADJUSTMENT",
+      quantityChange: adjustment.qtyChange,
+      productId: product.id,
+      reference: { type: "ADJUSTMENT", id: adjustment.id },
+      reason: adjustment.reason,
+      createdBy: user.id,
+      createdAt: now,
+    }
+    const updated: Adjustment = {
+      ...adjustment,
+      status: "APPROVED",
+      lossValue:
+        adjustment.type === "DAMAGED"
+          ? Math.abs(adjustment.qtyChange) * product.avgCost
+          : null,
+      decidedBy: user.id,
+      decidedAt: now,
+    }
+
+    set({
+      adjustments: state.adjustments.map((item) => (item.id === id ? updated : item)),
+      products: state.products.map((item) =>
+        item.id === product.id
+          ? { ...item, stock: item.stock + adjustment.qtyChange }
+          : item,
+      ),
+      movements: [movement, ...state.movements],
+    })
+    return { ok: true, message: `Adjustment #${id} disetujui. Stok diperbarui.` }
+  },
+
+  rejectAdjustment: (id) => {
+    const state = get()
+    const user = activeUser(state)
+    if (!user) return fail("Sesi tidak ditemukan. Silakan login ulang.")
+    if (user.role !== "OWNER") return fail("Hanya owner yang bisa menolak adjustment.")
+    const adjustment = state.adjustments.find((item) => item.id === id)
+    if (!adjustment) return fail("Adjustment tidak ditemukan.")
+    if (adjustment.status !== "PENDING") return fail("Adjustment ini tidak sedang menunggu persetujuan.")
+
+    const updated: Adjustment = {
+      ...adjustment,
+      status: "REJECTED",
+      lossValue: null,
+      decidedBy: user.id,
+      decidedAt: new Date().toISOString(),
+    }
+    set({
+      adjustments: state.adjustments.map((item) => (item.id === id ? updated : item)),
+    })
+    return { ok: true, message: `Adjustment #${id} ditolak. Stok tidak berubah.` }
   },
 
   resetMock: () => {

@@ -1,5 +1,5 @@
 import { useMemo, useState, type FormEvent } from "react"
-import { CircleAlert, CircleCheck, Clock, Plus, Wrench } from "lucide-react"
+import { CircleAlert, CircleCheck, Clock, Plus, UserRound, Wrench, X } from "lucide-react"
 import PageHeader from "../components/PageHeader"
 import StatCard from "../components/StatCard"
 import Badge, { type BadgeTone } from "../components/Badge"
@@ -9,9 +9,10 @@ import Field from "../components/Field"
 import Modal from "../components/Modal"
 import Pagination from "../components/Pagination"
 import { useAppStore } from "../store/useAppStore"
+import { useAuth } from "../auth/useAuth"
 import type { Adjustment, AdjustmentStatus, AdjustmentType } from "../types/api"
 import { angka, rupiah, tanggalWaktu } from "../lib/format"
-import { paginate } from "../lib/selectors"
+import { findUser, paginate } from "../lib/selectors"
 import { inputClass, primaryButton, secondaryButton, selectClass } from "../lib/ui"
 
 const statusTone: Record<AdjustmentStatus, BadgeTone> = {
@@ -34,17 +35,25 @@ const typeLabel: Record<AdjustmentType, string> = {
 export default function Adjustments() {
   const products = useAppStore((state) => state.products)
   const adjustments = useAppStore((state) => state.adjustments)
+  const users = useAppStore((state) => state.users)
   const currentUserId = useAppStore((state) => state.currentUserId)
   const createAdjustment = useAppStore((state) => state.createAdjustment)
+  const approveAdjustment = useAppStore((state) => state.approveAdjustment)
+  const rejectAdjustment = useAppStore((state) => state.rejectAdjustment)
   const notify = useAppStore((state) => state.notify)
+  const { user } = useAuth()
+  const isOwner = user?.role === "OWNER"
 
   const activeProducts = useMemo(
     () => products.filter((product) => product.status === "ACTIVE"),
     [products],
   )
   const mine = useMemo(
-    () => adjustments.filter((item) => item.requestedBy === currentUserId),
-    [adjustments, currentUserId],
+    () =>
+      isOwner
+        ? adjustments
+        : adjustments.filter((item) => item.requestedBy === currentUserId),
+    [adjustments, currentUserId, isOwner],
   )
 
   const [status, setStatus] = useState<"ALL" | AdjustmentStatus>("ALL")
@@ -84,6 +93,22 @@ export default function Adjustments() {
     })
     notify(result.message ?? (result.ok ? "Adjustment dibuat." : "Gagal."), result.ok ? "success" : "error")
     if (result.ok) setOpen(false)
+  }
+
+  const onApprove = (item: Adjustment) => {
+    const result = approveAdjustment(item.id)
+    notify(
+      result.message ?? (result.ok ? "Adjustment disetujui." : "Gagal menyetujui."),
+      result.ok ? "success" : "error",
+    )
+  }
+
+  const onReject = (item: Adjustment) => {
+    const result = rejectAdjustment(item.id)
+    notify(
+      result.message ?? (result.ok ? "Adjustment ditolak." : "Gagal menolak."),
+      result.ok ? "success" : "error",
+    )
   }
 
   const columns: Column<Adjustment>[] = [
@@ -147,10 +172,54 @@ export default function Adjustments() {
         ),
     },
     {
+      key: "requester",
+      header: "Pengaju",
+      render: (item) => (
+        <div className="flex items-center gap-2">
+          <span className="grid size-7 shrink-0 place-items-center rounded-full bg-paper text-[11px] font-bold text-ink-soft">
+            <UserRound size={13} />
+          </span>
+          <span className="text-ink">{findUser(users, item.requestedBy)?.name ?? "—"}</span>
+        </div>
+      ),
+    },
+    {
       key: "status",
       header: "Status",
       render: (item) => <Badge tone={statusTone[item.status]}>{statusLabel[item.status]}</Badge>,
     },
+    ...(isOwner
+      ? [
+          {
+            key: "action",
+            header: "Aksi",
+            align: "right" as const,
+            render: (item: Adjustment) =>
+              item.status === "PENDING" ? (
+                <div className="flex flex-wrap items-center justify-end gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => onApprove(item)}
+                    className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-xs font-semibold text-emerald-700 transition-colors hover:bg-emerald-100"
+                  >
+                    <CircleCheck size={13} />
+                    Setujui
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onReject(item)}
+                    className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-red-200 bg-red-50 px-2.5 py-1.5 text-xs font-semibold text-danger transition-colors hover:bg-red-100"
+                  >
+                    <X size={13} />
+                    Tolak
+                  </button>
+                </div>
+              ) : (
+                <span className="text-xs text-ink-soft/70">—</span>
+              ),
+          },
+        ]
+      : []),
   ]
 
   return (
@@ -158,11 +227,15 @@ export default function Adjustments() {
       <PageHeader
         eyebrow="Penyesuaian"
         title="Adjustment"
-        description="Ajukan barang rusak atau koreksi stok. Pengajuan manager menunggu persetujuan owner sebelum stok berubah."
+        description={
+          isOwner
+            ? "Setujui atau tolak pengajuan manager. Adjustment yang dibuat owner langsung mengubah stok."
+            : "Ajukan barang rusak atau koreksi stok. Pengajuan manager menunggu persetujuan owner sebelum stok berubah."
+        }
         actions={
           <button type="button" onClick={openCreate} className={primaryButton}>
             <Plus size={16} />
-            Ajukan adjustment
+            {isOwner ? "Catat adjustment" : "Ajukan adjustment"}
           </button>
         }
       />
@@ -176,9 +249,13 @@ export default function Adjustments() {
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h2 className="text-sm font-semibold text-ink">Pengajuan saya</h2>
+          <h2 className="text-sm font-semibold text-ink">
+            {isOwner ? "Semua pengajuan" : "Pengajuan saya"}
+          </h2>
           <p className="mt-0.5 text-xs text-ink-soft">
-            Manager hanya melihat adjustment miliknya sendiri.
+            {isOwner
+              ? "Owner melihat seluruh adjustment manager dan bisa langsung memutuskan."
+              : "Manager hanya melihat adjustment miliknya sendiri."}
           </p>
         </div>
         <select
@@ -228,15 +305,19 @@ export default function Adjustments() {
       <Modal
         open={open}
         onClose={() => setOpen(false)}
-        title="Ajukan adjustment"
-        description="Pengajuan akan berstatus pending sampai owner menyetujui."
+        title={isOwner ? "Catat adjustment" : "Ajukan adjustment"}
+        description={
+          isOwner
+            ? "Adjustment owner langsung disetujui dan stok berubah saat disimpan."
+            : "Pengajuan akan berstatus pending sampai owner menyetujui."
+        }
         footer={
           <>
             <button type="button" onClick={() => setOpen(false)} className={secondaryButton}>
               Batal
             </button>
             <button type="submit" form="adjustment-form" className={primaryButton}>
-              Kirim pengajuan
+              {isOwner ? "Simpan & setujui" : "Kirim pengajuan"}
             </button>
           </>
         }
@@ -303,7 +384,9 @@ export default function Adjustments() {
           </Field>
 
           <p className="rounded-xl border border-line bg-surface-muted px-3.5 py-3 text-xs leading-relaxed text-ink-soft">
-            Untuk barang rusak, kerugian dihitung dari jumlah × HPP rata-rata saat owner menyetujui.
+            {isOwner
+              ? "Untuk barang rusak, kerugian dihitung dari jumlah × HPP rata-rata saat disimpan."
+              : "Untuk barang rusak, kerugian dihitung dari jumlah × HPP rata-rata saat owner menyetujui."}
           </p>
         </form>
       </Modal>

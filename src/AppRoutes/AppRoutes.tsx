@@ -4,6 +4,7 @@ import Login from "../pages/login"
 import Landing from "../pages/Landingpage"
 import NotFoundPage from "../pages/notfound"
 import Managerlay from "../layout/manager"
+import Ownerlay from "../layout/owner"
 import Mdashboard from "../manager/dashboard"
 import Movement from "../manager/movement"
 import Products from "../manager/products"
@@ -61,13 +62,19 @@ export default function AppRoutes() {
 
         {/* OWNER ROLE  */}
         <Route
-            path='/owner/dashboard'
             element={
                 <RequireAuth role="OWNER">
-                    <OwnerDashboard />
+                    <Ownerlay />
                 </RequireAuth>
             }
-        />
+        >
+            <Route path='/owner/dashboard' element={<OwnerDashboard />} />
+            <Route path='/owner/products' element={<Products />} />
+            <Route path='/owner/stockin' element={<Stockin />} />
+            <Route path='/owner/sales' element={<Sales />} />
+            <Route path='/owner/adjustments' element={<Adjustments />} />
+            <Route path='/owner/movement' element={<Movement />} />
+        </Route>
 
         </Routes>
         </BrowserRouter>
