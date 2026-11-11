@@ -1,5 +1,6 @@
 import { Outlet } from "react-router-dom"
 import Sidebar from "../component/sidebarm"
+import Toast from "../components/Toast"
 
 export default function Managerlay() {
     return (
@@ -10,6 +11,7 @@ export default function Managerlay() {
                     <Outlet />
                 </div>
             </main>
+            <Toast />
         </div>
     )
 }

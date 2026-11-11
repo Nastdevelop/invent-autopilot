@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react"
-import { Link } from "react-router-dom"
-import { ArrowLeft, Boxes, CircleCheck, Eye, EyeOff, Lock, LogIn, Mail } from "lucide-react"
+import { Link, Navigate, useNavigate } from "react-router-dom"
+import { ArrowLeft, Boxes, CircleCheck, CircleAlert, Eye, EyeOff, Lock, LogIn, Mail } from "lucide-react"
+import { useAuth } from "../auth/useAuth"
 
 const poin = [
     "Stok gudang tercatat otomatis",
@@ -9,12 +10,37 @@ const poin = [
 ]
 
 export default function Login() {
+    const { user, login } = useAuth()
+    const navigate = useNavigate()
     const [email, setEmail] = useState("")
     const [pw, setPw] = useState("")
     const [lihatPw, setLihatPw] = useState(false)
+    const [error, setError] = useState("")
 
     const onSubmit = (e: FormEvent<HTMLFormElement>) => {
         e.preventDefault()
+        if (!email.trim() || !pw) {
+            setError("Email dan kata sandi wajib diisi.")
+            return
+        }
+        const result = login(email)
+        if (!result.ok) {
+            setError(result.message)
+            return
+        }
+        setError("")
+        navigate(result.role === "OWNER" ? "/owner/dashboard" : "/manager/dashboard", {
+            replace: true,
+        })
+    }
+
+    if (user) {
+        return (
+            <Navigate
+                to={user.role === "OWNER" ? "/owner/dashboard" : "/manager/dashboard"}
+                replace
+            />
+        )
     }
 
     return (
@@ -126,6 +152,13 @@ export default function Login() {
                                 </div>
                             </div>
 
+                            {error ? (
+                                <p className="flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 px-3.5 py-3 text-xs font-medium leading-relaxed text-red-700">
+                                    <CircleAlert size={15} className="mt-0.5 shrink-0" />
+                                    {error}
+                                </p>
+                            ) : null}
+
                             <button
                                 type="submit"
                                 className="mt-2 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-brand px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-brand-soft"
@@ -135,9 +168,16 @@ export default function Login() {
                             </button>
                         </form>
 
-                        <p className="mt-5 border-t border-line pt-5 text-center text-xs text-ink-soft">
-                            Belum punya akun? Hubungi admin usaha untuk dibuatkan akses.
-                        </p>
+                        <div className="mt-5 border-t border-line pt-5">
+                            <p className="text-center text-xs font-semibold text-ink">Akun demo</p>
+                            <div className="mt-2 grid gap-1.5 text-center text-xs text-ink-soft">
+                                <p><span className="font-medium text-ink">owner@demo.com</span> · Owner</p>
+                                <p><span className="font-medium text-ink">manager@demo.com</span> · Manager</p>
+                            </div>
+                            <p className="mt-2 text-center text-[11px] leading-relaxed text-ink-soft">
+                                Mode mock: kata sandi diabaikan, role ditentukan dari email.
+                            </p>
+                        </div>
                     </div>
 
                     <p className="mt-6 text-center text-xs text-ink-soft">
