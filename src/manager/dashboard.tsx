@@ -1,4 +1,3 @@
-import { useMemo } from "react"
 import { Link } from "react-router-dom"
 import {
   ArrowRight,
@@ -14,35 +13,28 @@ import PageHeader from "../components/PageHeader"
 import StatCard from "../components/StatCard"
 import TrendChart from "../components/TrendChart"
 import Badge from "../components/Badge"
-import { useAppStore } from "../store/useAppStore"
+import { ErrorBlock, LoadingBlock } from "../components/QueryFeedback"
+import { useAdjustments, useProducts, useSales } from "../api/hooks"
 import { angka, dateKey, lastNDays, rupiah, tanggalWaktu } from "../lib/format"
 
 const renderedAt = new Date()
 
 export default function Mdashboard() {
-  const products = useAppStore((state) => state.products)
-  const sales = useAppStore((state) => state.sales)
-  const adjustments = useAppStore((state) => state.adjustments)
-  const currentUserId = useAppStore((state) => state.currentUserId)
+  const activeProducts = useProducts({ status: "ACTIVE", limit: 100 })
+  const pendingProducts = useProducts({ status: "PENDING_APPROVAL", limit: 100 })
+  const salesQuery = useSales({ limit: 100 })
+  const pendingAdjustments = useAdjustments({ status: "PENDING", limit: 100 })
 
-  const activeProducts = products.filter((product) => product.status === "ACTIVE")
-  const lowStock = activeProducts
+  const products = activeProducts.data?.items ?? []
+  const sales = salesQuery.data?.items ?? []
+  const adjustments = pendingAdjustments.data?.items ?? []
+
+  const lowStock = products
     .filter((product) => product.stock <= product.minStock)
     .sort((a, b) => a.stock - b.stock)
-  const pendingSales = sales.filter((sale) => sale.status === "PENDING")
-  const pendingAdjustments = adjustments.filter(
-    (item) => item.status === "PENDING" && item.requestedBy === currentUserId,
-  )
 
+  const pendingSales = sales.filter((sale) => sale.status === "PENDING")
   const today = dateKey(renderedAt.toISOString())
-  const todayLabel = renderedAt.toLocaleDateString("id-ID", {
-    timeZone: "Asia/Jakarta",
-    weekday: "long",
-    day: "2-digit",
-    month: "long",
-    year: "numeric",
-  })
-  const updatedAt = renderedAt.toISOString()
   const omzetToday = sales
     .filter(
       (sale) =>
@@ -52,42 +44,67 @@ export default function Mdashboard() {
     )
     .reduce((total, sale) => total + sale.total, 0)
 
-  const trend = useMemo(() => {
-    const days = lastNDays(7)
-    return days.map((day) => {
-      const value = sales
-        .filter(
-          (sale) =>
-            sale.status === "SUCCESS" &&
-            sale.confirmedAt !== null &&
-            dateKey(sale.confirmedAt) === day,
-        )
-        .reduce((total, sale) => total + sale.total, 0)
-      return { date: day, value }
-    })
-  }, [sales])
+  const trend = lastNDays(7).map((day) => {
+    const value = sales
+      .filter(
+        (sale) =>
+          sale.status === "SUCCESS" &&
+          sale.confirmedAt !== null &&
+          dateKey(sale.confirmedAt) === day,
+      )
+      .reduce((total, sale) => total + sale.total, 0)
+    return { date: day, value }
+  })
 
   const pendingQueue = [
-    ...pendingSales.map((sale) => ({
+    ...pendingSales.slice(0, 3).map((sale) => ({
       id: `sale-${sale.id}`,
       title: `Penjualan #${sale.id}`,
-      detail: `${sale.items.length} item · ${rupiah(sale.total)}`,
+      detail: `${sale.itemCount} item · ${rupiah(sale.total)}`,
       to: "/manager/sales",
       tone: "warning" as const,
       label: "Pending",
     })),
-    ...pendingAdjustments.map((item) => {
-      const product = products.find((candidate) => candidate.id === item.productId)
-      return {
-        id: `adjustment-${item.id}`,
-        title: `Adjustment #${item.id}`,
-        detail: `${product?.name ?? "Produk"} · ${item.qtyChange} unit`,
-        to: "/manager/adjustments",
-        tone: "info" as const,
-        label: "Menunggu",
-      }
-    }),
+    ...adjustments.slice(0, 3).map((item) => ({
+      id: `adjustment-${item.id}`,
+      title: `Adjustment #${item.id}`,
+      detail: `${item.product.name} · ${item.qtyChange} unit`,
+      to: "/manager/adjustments",
+      tone: "info" as const,
+      label: "Menunggu",
+    })),
   ].slice(0, 5)
+
+  const todayLabel = renderedAt.toLocaleDateString("id-ID", {
+    timeZone: "Asia/Jakarta",
+    weekday: "long",
+    day: "2-digit",
+    month: "long",
+    year: "numeric",
+  })
+
+  const isPending =
+    activeProducts.isPending ||
+    pendingProducts.isPending ||
+    salesQuery.isPending ||
+    pendingAdjustments.isPending
+  const error =
+    activeProducts.error ?? pendingProducts.error ?? salesQuery.error ?? pendingAdjustments.error
+
+  if (isPending) return <LoadingBlock label="Memuat ringkasan operasional..." />
+  if (error) {
+    return (
+      <ErrorBlock
+        error={error}
+        onRetry={() => {
+          void activeProducts.refetch()
+          void pendingProducts.refetch()
+          void salesQuery.refetch()
+          void pendingAdjustments.refetch()
+        }}
+      />
+    )
+  }
 
   return (
     <div className="rise space-y-6">
@@ -106,15 +123,15 @@ export default function Mdashboard() {
       <section aria-label="Ringkasan angka" className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard
           label="Produk aktif"
-          value={angka(activeProducts.length)}
-          hint={`${products.length} produk terdaftar`}
+          value={angka(activeProducts.data?.total ?? 0)}
+          hint={`${angka(pendingProducts.data?.total ?? 0)} menunggu persetujuan`}
           icon={Package}
           tone="accent"
         />
         <StatCard
           label="Stok rendah"
           value={angka(lowStock.length)}
-          hint="Stok di bawah minimum"
+          hint="Produk aktif di bawah minimum"
           icon={CircleAlert}
           tone="amber"
         />
@@ -228,8 +245,7 @@ export default function Mdashboard() {
       </section>
 
       <p className="text-xs text-ink-soft">
-        Data masih memakai array lokal (mock). Terakhir diperbarui{" "}
-        {tanggalWaktu(updatedAt)}.
+        Data terakhir dimuat {tanggalWaktu(renderedAt.toISOString())}.
       </p>
     </div>
   )

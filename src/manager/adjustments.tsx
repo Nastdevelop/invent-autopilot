@@ -1,5 +1,12 @@
-import { useMemo, useState, type FormEvent } from "react"
-import { CircleAlert, CircleCheck, Clock, Plus, UserRound, Wrench, X } from "lucide-react"
+import { useState, type FormEvent } from "react"
+import {
+  CircleCheck,
+  Clock,
+  Plus,
+  UserRound,
+  Wrench,
+  X,
+} from "lucide-react"
 import PageHeader from "../components/PageHeader"
 import StatCard from "../components/StatCard"
 import Badge, { type BadgeTone } from "../components/Badge"
@@ -8,11 +15,20 @@ import EmptyState from "../components/EmptyState"
 import Field from "../components/Field"
 import Modal from "../components/Modal"
 import Pagination from "../components/Pagination"
-import { useAppStore } from "../store/useAppStore"
+import { ErrorBlock, LoadingBlock } from "../components/QueryFeedback"
+import {
+  useAdjustments,
+  useApproveAdjustment,
+  useCreateAdjustment,
+  useProducts,
+  useRejectAdjustment,
+} from "../api/hooks"
+import { errorMessage } from "../api/client"
 import { useAuth } from "../auth/useAuth"
+import { useToastStore } from "../store/useToastStore"
 import type { Adjustment, AdjustmentStatus, AdjustmentType } from "../types/api"
 import { angka, rupiah, tanggalWaktu } from "../lib/format"
-import { findUser, paginate } from "../lib/selectors"
+import { pageCount } from "../lib/pagination"
 import { inputClass, primaryButton, secondaryButton, selectClass } from "../lib/ui"
 
 const statusTone: Record<AdjustmentStatus, BadgeTone> = {
@@ -22,7 +38,7 @@ const statusTone: Record<AdjustmentStatus, BadgeTone> = {
 }
 
 const statusLabel: Record<AdjustmentStatus, string> = {
-  PENDING: "Menunggu owner",
+  PENDING: "Menunggu",
   APPROVED: "Disetujui",
   REJECTED: "Ditolak",
 }
@@ -32,83 +48,107 @@ const typeLabel: Record<AdjustmentType, string> = {
   CORRECTION: "Koreksi stok",
 }
 
+const PAGE_SIZE = 8
+
 export default function Adjustments() {
-  const products = useAppStore((state) => state.products)
-  const adjustments = useAppStore((state) => state.adjustments)
-  const users = useAppStore((state) => state.users)
-  const currentUserId = useAppStore((state) => state.currentUserId)
-  const createAdjustment = useAppStore((state) => state.createAdjustment)
-  const approveAdjustment = useAppStore((state) => state.approveAdjustment)
-  const rejectAdjustment = useAppStore((state) => state.rejectAdjustment)
-  const notify = useAppStore((state) => state.notify)
   const { user } = useAuth()
   const isOwner = user?.role === "OWNER"
-
-  const activeProducts = useMemo(
-    () => products.filter((product) => product.status === "ACTIVE"),
-    [products],
-  )
-  const mine = useMemo(
-    () =>
-      isOwner
-        ? adjustments
-        : adjustments.filter((item) => item.requestedBy === currentUserId),
-    [adjustments, currentUserId, isOwner],
-  )
+  const notify = useToastStore((state) => state.notify)
 
   const [status, setStatus] = useState<"ALL" | AdjustmentStatus>("ALL")
+  const [type, setType] = useState<"ALL" | AdjustmentType>("ALL")
   const [page, setPage] = useState(1)
+
+  const params = {
+    status: status === "ALL" ? undefined : status,
+    type: type === "ALL" ? undefined : type,
+    page,
+    limit: PAGE_SIZE,
+  }
+
+  const list = useAdjustments(params)
+  const all = useAdjustments({ limit: 1 })
+  const pending = useAdjustments({ status: "PENDING", limit: 1 })
+  const approved = useAdjustments({ status: "APPROVED", limit: 1 })
+  const rejected = useAdjustments({ status: "REJECTED", limit: 1 })
+
+  const activeProducts = useProducts({ status: "ACTIVE", limit: 100 })
+  const createAdjustment = useCreateAdjustment()
+  const approveAdjustment = useApproveAdjustment()
+  const rejectAdjustment = useRejectAdjustment()
+
   const [open, setOpen] = useState(false)
   const [productId, setProductId] = useState("")
-  const [type, setType] = useState<AdjustmentType>("DAMAGED")
+  const [formType, setFormType] = useState<AdjustmentType>("DAMAGED")
   const [qty, setQty] = useState("1")
   const [reason, setReason] = useState("")
 
-  const filtered = useMemo(
-    () => mine.filter((item) => status === "ALL" || item.status === status),
-    [mine, status],
-  )
-  const pageData = paginate(filtered, page, 8)
-
-  const pendingCount = mine.filter((item) => item.status === "PENDING").length
-  const approvedCount = mine.filter((item) => item.status === "APPROVED").length
-  const rejectedCount = mine.filter((item) => item.status === "REJECTED").length
-
   const openCreate = () => {
     setProductId("")
-    setType("DAMAGED")
+    setFormType("DAMAGED")
     setQty("1")
     setReason("")
     setOpen(true)
   }
 
-  const onSubmit = (event: FormEvent<HTMLFormElement>) => {
+  const onSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
+    const id = Number(productId)
     const value = Number(qty)
-    const result = createAdjustment({
-      productId: Number(productId),
-      type,
-      qtyChange: type === "DAMAGED" ? -Math.abs(value) : value,
-      reason,
-    })
-    notify(result.message ?? (result.ok ? "Adjustment dibuat." : "Gagal."), result.ok ? "success" : "error")
-    if (result.ok) setOpen(false)
+
+    if (!id) {
+      notify("Pilih produk terlebih dahulu.", "error")
+      return
+    }
+    if (!Number.isInteger(value) || value === 0) {
+      notify("Jumlah harus bilangan bulat dan tidak boleh nol.", "error")
+      return
+    }
+    if (formType === "DAMAGED" && value < 0) {
+      notify("Untuk barang rusak, isi jumlah positif. Sistem memakai nilai negatif.", "error")
+      return
+    }
+    if (!reason.trim()) {
+      notify("Alasan wajib diisi.", "error")
+      return
+    }
+
+    try {
+      await createAdjustment.mutateAsync({
+        productId: id,
+        type: formType,
+        qtyChange: formType === "DAMAGED" ? -Math.abs(value) : value,
+        reason: reason.trim(),
+      })
+      notify(
+        isOwner
+          ? "Adjustment disimpan dan langsung disetujui. Stok sudah diperbarui."
+          : "Adjustment dikirim dan menunggu persetujuan owner.",
+        "success",
+      )
+      setOpen(false)
+      setPage(1)
+    } catch (error) {
+      notify(errorMessage(error), "error")
+    }
   }
 
-  const onApprove = (item: Adjustment) => {
-    const result = approveAdjustment(item.id)
-    notify(
-      result.message ?? (result.ok ? "Adjustment disetujui." : "Gagal menyetujui."),
-      result.ok ? "success" : "error",
-    )
+  const onApprove = async (item: Adjustment) => {
+    try {
+      await approveAdjustment.mutateAsync(item.id)
+      notify(`Adjustment #${item.id} disetujui. Stok sudah diperbarui.`, "success")
+    } catch (error) {
+      notify(errorMessage(error), "error")
+    }
   }
 
-  const onReject = (item: Adjustment) => {
-    const result = rejectAdjustment(item.id)
-    notify(
-      result.message ?? (result.ok ? "Adjustment ditolak." : "Gagal menolak."),
-      result.ok ? "success" : "error",
-    )
+  const onReject = async (item: Adjustment) => {
+    try {
+      await rejectAdjustment.mutateAsync(item.id)
+      notify(`Adjustment #${item.id} ditolak. Stok tidak berubah.`, "success")
+    } catch (error) {
+      notify(errorMessage(error), "error")
+    }
   }
 
   const columns: Column<Adjustment>[] = [
@@ -125,28 +165,22 @@ export default function Adjustments() {
     {
       key: "product",
       header: "Produk",
-      render: (item) => {
-        const product = products.find((candidate) => candidate.id === item.productId)
-        return (
-          <div>
-            <p className="font-medium text-ink">{product?.name ?? "Produk"}</p>
-            <p className="mt-0.5 text-xs text-ink-soft">{product?.sku ?? "-"}</p>
-          </div>
-        )
-      },
+      render: (item) => (
+        <div>
+          <p className="font-medium text-ink">{item.product.name}</p>
+          <p className="mt-0.5 text-xs text-ink-soft">{item.product.sku}</p>
+        </div>
+      ),
     },
     {
       key: "type",
       header: "Jenis",
       render: (item) => (
-        <div>
-          <p className="text-ink">{typeLabel[item.type]}</p>
-          <p className="mt-0.5 text-xs text-ink-soft">{item.reason}</p>
-        </div>
+        <Badge tone={item.type === "DAMAGED" ? "danger" : "info"}>{typeLabel[item.type]}</Badge>
       ),
     },
     {
-      key: "qty",
+      key: "change",
       header: "Perubahan",
       align: "right",
       render: (item) => (
@@ -179,7 +213,7 @@ export default function Adjustments() {
           <span className="grid size-7 shrink-0 place-items-center rounded-full bg-paper text-[11px] font-bold text-ink-soft">
             <UserRound size={13} />
           </span>
-          <span className="text-ink">{findUser(users, item.requestedBy)?.name ?? "—"}</span>
+          <span className="text-ink">{item.requestedBy.name}</span>
         </div>
       ),
     },
@@ -200,7 +234,8 @@ export default function Adjustments() {
                   <button
                     type="button"
                     onClick={() => onApprove(item)}
-                    className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-xs font-semibold text-emerald-700 transition-colors hover:bg-emerald-100"
+                    disabled={approveAdjustment.isPending || rejectAdjustment.isPending}
+                    className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-xs font-semibold text-emerald-700 transition-colors hover:bg-emerald-100 disabled:opacity-50"
                   >
                     <CircleCheck size={13} />
                     Setujui
@@ -208,7 +243,8 @@ export default function Adjustments() {
                   <button
                     type="button"
                     onClick={() => onReject(item)}
-                    className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-red-200 bg-red-50 px-2.5 py-1.5 text-xs font-semibold text-danger transition-colors hover:bg-red-100"
+                    disabled={approveAdjustment.isPending || rejectAdjustment.isPending}
+                    className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-red-200 bg-red-50 px-2.5 py-1.5 text-xs font-semibold text-danger transition-colors hover:bg-red-100 disabled:opacity-50"
                   >
                     <X size={13} />
                     Tolak
@@ -221,6 +257,8 @@ export default function Adjustments() {
         ]
       : []),
   ]
+
+  const data = list.data
 
   return (
     <div className="rise space-y-6">
@@ -241,10 +279,10 @@ export default function Adjustments() {
       />
 
       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <StatCard label="Total pengajuan" value={angka(mine.length)} icon={Wrench} tone="slate" />
-        <StatCard label="Menunggu" value={angka(pendingCount)} icon={Clock} tone="amber" />
-        <StatCard label="Disetujui" value={angka(approvedCount)} icon={CircleCheck} tone="emerald" />
-        <StatCard label="Ditolak" value={angka(rejectedCount)} icon={CircleAlert} tone="red" />
+        <StatCard label="Total pengajuan" value={angka(all.data?.total ?? 0)} icon={Wrench} tone="slate" />
+        <StatCard label="Menunggu" value={angka(pending.data?.total ?? 0)} icon={Clock} tone="amber" />
+        <StatCard label="Disetujui" value={angka(approved.data?.total ?? 0)} icon={CircleCheck} tone="emerald" />
+        <StatCard label="Ditolak" value={angka(rejected.data?.total ?? 0)} icon={X} tone="red" />
       </section>
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -258,48 +296,65 @@ export default function Adjustments() {
               : "Manager hanya melihat adjustment miliknya sendiri."}
           </p>
         </div>
-        <select
-          value={status}
-          onChange={(event) => {
-            setStatus(event.target.value as "ALL" | AdjustmentStatus)
-            setPage(1)
-          }}
-          aria-label="Filter status adjustment"
-          className={`${selectClass} sm:w-48`}
-        >
-          <option value="ALL">Semua status</option>
-          <option value="PENDING">Menunggu owner</option>
-          <option value="APPROVED">Disetujui</option>
-          <option value="REJECTED">Ditolak</option>
-        </select>
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <select
+            value={status}
+            onChange={(event) => {
+              setStatus(event.target.value as "ALL" | AdjustmentStatus)
+              setPage(1)
+            }}
+            aria-label="Filter status adjustment"
+            className={`${selectClass} sm:w-40`}
+          >
+            <option value="ALL">Semua status</option>
+            <option value="PENDING">Menunggu</option>
+            <option value="APPROVED">Disetujui</option>
+            <option value="REJECTED">Ditolak</option>
+          </select>
+          <select
+            value={type}
+            onChange={(event) => {
+              setType(event.target.value as "ALL" | AdjustmentType)
+              setPage(1)
+            }}
+            aria-label="Filter jenis adjustment"
+            className={`${selectClass} sm:w-44`}
+          >
+            <option value="ALL">Semua jenis</option>
+            <option value="DAMAGED">Barang rusak</option>
+            <option value="CORRECTION">Koreksi stok</option>
+          </select>
+        </div>
       </div>
 
       <section className="overflow-hidden rounded-2xl border border-line bg-surface">
-        <DataTable
-          columns={columns}
-          rows={pageData.items}
-          rowKey={(item) => item.id}
-          minWidth={860}
-          empty={
-            <EmptyState
-              icon={<Wrench size={24} strokeWidth={1.9} />}
-              title="Belum ada adjustment"
-              description="Ajukan barang rusak atau koreksi stok lewat tombol di atas."
-              action={
-                <button type="button" onClick={openCreate} className={primaryButton}>
-                  <Plus size={15} />
-                  Ajukan adjustment
-                </button>
-              }
-            />
-          }
-        />
-        <Pagination
-          page={pageData.page}
-          pageCount={pageData.pageCount}
-          total={pageData.total}
-          onPage={setPage}
-        />
+        {list.isPending ? (
+          <LoadingBlock label="Memuat adjustment..." />
+        ) : list.error ? (
+          <ErrorBlock error={list.error} onRetry={() => void list.refetch()} />
+        ) : (
+          <DataTable
+            columns={columns}
+            rows={data?.items ?? []}
+            rowKey={(item) => item.id}
+            minWidth={980}
+            empty={
+              <EmptyState
+                icon={<Wrench size={24} strokeWidth={1.9} />}
+                title="Belum ada adjustment"
+                description="Ajukan barang rusak atau koreksi stok lewat tombol di atas."
+              />
+            }
+          />
+        )}
+        {data ? (
+          <Pagination
+            page={data.page}
+            pageCount={pageCount(data.total, PAGE_SIZE)}
+            total={data.total}
+            onPage={setPage}
+          />
+        ) : null}
       </section>
 
       <Modal
@@ -316,7 +371,12 @@ export default function Adjustments() {
             <button type="button" onClick={() => setOpen(false)} className={secondaryButton}>
               Batal
             </button>
-            <button type="submit" form="adjustment-form" className={primaryButton}>
+            <button
+              type="submit"
+              form="adjustment-form"
+              disabled={createAdjustment.isPending}
+              className={primaryButton}
+            >
               {isOwner ? "Simpan & setujui" : "Kirim pengajuan"}
             </button>
           </>
@@ -331,9 +391,9 @@ export default function Adjustments() {
               className={selectClass}
             >
               <option value="">Pilih produk aktif</option>
-              {activeProducts.map((product) => (
+              {(activeProducts.data?.items ?? []).map((product) => (
                 <option key={product.id} value={product.id}>
-                  {product.name} ({product.sku}) · stok {product.stock} {product.unit}
+                  {product.name} ({product.sku}) · stok {product.stock}
                 </option>
               ))}
             </select>
@@ -343,8 +403,8 @@ export default function Adjustments() {
             <Field label="Jenis" htmlFor="adjustment-type">
               <select
                 id="adjustment-type"
-                value={type}
-                onChange={(event) => setType(event.target.value as AdjustmentType)}
+                value={formType}
+                onChange={(event) => setFormType(event.target.value as AdjustmentType)}
                 className={selectClass}
               >
                 <option value="DAMAGED">Barang rusak</option>
@@ -352,19 +412,18 @@ export default function Adjustments() {
               </select>
             </Field>
             <Field
-              label={type === "DAMAGED" ? "Jumlah rusak" : "Perubahan stok"}
+              label="Jumlah"
               htmlFor="adjustment-qty"
               hint={
-                type === "DAMAGED"
-                  ? "Isi jumlah positif. Sistem menyimpannya sebagai pengurangan stok."
-                  : "Boleh positif (stok bertambah) atau negatif (stok berkurang)."
+                formType === "DAMAGED"
+                  ? "Isi positif, sistem memakai nilai negatif."
+                  : "Positif menambah stok, negatif mengurangi."
               }
             >
               <input
                 id="adjustment-qty"
                 type="number"
                 step="1"
-                min={type === "DAMAGED" ? "1" : undefined}
                 value={qty}
                 onChange={(event) => setQty(event.target.value)}
                 className={inputClass}

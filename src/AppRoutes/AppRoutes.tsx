@@ -12,14 +12,24 @@ import Stockin from "../manager/stockin"
 import Sales from "../manager/sales"
 import Adjustments from "../manager/adjustments"
 import OwnerDashboard from "../owner/dashboard"
-import { useAppStore } from "../store/useAppStore"
+import { useAuth } from "../auth/useAuth"
 import type { Role } from "../types/api"
 
-function RequireAuth({ role, children }: { role: Role; children: ReactNode }) {
-    const user = useAppStore(
-        (state) => state.users.find((candidate) => candidate.id === state.currentUserId) ?? null,
+function AuthLoading() {
+    return (
+        <div className="grid min-h-dvh place-items-center bg-paper">
+            <div className="flex flex-col items-center gap-3">
+                <span className="size-8 animate-spin rounded-full border-2 border-line border-t-accent" />
+                <p className="text-sm text-ink-soft">Memeriksa sesi...</p>
+            </div>
+        </div>
     )
+}
 
+function RequireAuth({ role, children }: { role: Role; children: ReactNode }) {
+    const { user, status } = useAuth()
+
+    if (status === "loading") return <AuthLoading />
     if (!user) return <Navigate to="/login" replace />
     if (user.role !== role) {
         return (

@@ -1,4 +1,4 @@
-import { useMemo, useState, type FormEvent } from "react"
+import { useState, type FormEvent } from "react"
 import {
   CircleCheck,
   Eye,
@@ -18,11 +18,22 @@ import Field from "../components/Field"
 import Modal from "../components/Modal"
 import ConfirmDialog from "../components/ConfirmDialog"
 import Pagination from "../components/Pagination"
-import { useAppStore } from "../store/useAppStore"
+import { ErrorBlock, LoadingBlock } from "../components/QueryFeedback"
+import {
+  useCancelSale,
+  useConfirmSale,
+  useCreateSale,
+  useDeleteSale,
+  useProducts,
+  useSale,
+  useSales,
+} from "../api/hooks"
+import { errorMessage } from "../api/client"
 import { useAuth } from "../auth/useAuth"
-import type { Sale, SaleStatus } from "../types/api"
+import { useToastStore } from "../store/useToastStore"
+import type { SaleBase, SaleStatus } from "../types/api"
 import { angka, rupiah, tanggalWaktu } from "../lib/format"
-import { paginate } from "../lib/selectors"
+import { pageCount } from "../lib/pagination"
 import {
   dangerButton,
   inputClass,
@@ -50,42 +61,48 @@ const statusLabel: Record<SaleStatus, string> = {
   CANCELLED: "Dibatalkan",
 }
 
+const PAGE_SIZE = 8
+
 export default function Sales() {
-  const products = useAppStore((state) => state.products)
-  const sales = useAppStore((state) => state.sales)
-  const users = useAppStore((state) => state.users)
-  const createSale = useAppStore((state) => state.createSale)
-  const confirmSale = useAppStore((state) => state.confirmSale)
-  const cancelSale = useAppStore((state) => state.cancelSale)
-  const deleteSale = useAppStore((state) => state.deleteSale)
-  const notify = useAppStore((state) => state.notify)
   const { user } = useAuth()
   const isManager = user?.role === "MANAGER"
-
-  const activeProducts = useMemo(
-    () => products.filter((product) => product.status === "ACTIVE"),
-    [products],
-  )
+  const notify = useToastStore((state) => state.notify)
 
   const [status, setStatus] = useState<"ALL" | SaleStatus>("ALL")
   const [page, setPage] = useState(1)
+
+  const list = useSales({
+    status: status === "ALL" ? undefined : status,
+    page,
+    limit: PAGE_SIZE,
+  })
+  const recent = useSales({ limit: 100 })
+  const pendingCount = useSales({ status: "PENDING", limit: 1 })
+  const activeProducts = useProducts({ status: "ACTIVE", limit: 100 })
+
+  const createSale = useCreateSale()
+  const confirmSale = useConfirmSale()
+  const cancelSale = useCancelSale()
+  const deleteSale = useDeleteSale()
+
   const [builderOpen, setBuilderOpen] = useState(false)
   const [items, setItems] = useState<BuilderItem[]>([{ productId: "", qty: "1" }])
-  const [detail, setDetail] = useState<Sale | null>(null)
-  const [deleting, setDeleting] = useState<Sale | null>(null)
-  const [cancelling, setCancelling] = useState<Sale | null>(null)
+  const [detailId, setDetailId] = useState<number | null>(null)
+  const [deleting, setDeleting] = useState<SaleBase | null>(null)
+  const [cancelling, setCancelling] = useState<SaleBase | null>(null)
   const [cancelReason, setCancelReason] = useState("")
 
-  const filtered = useMemo(
-    () => sales.filter((sale) => status === "ALL" || sale.status === status),
-    [sales, status],
-  )
-  const pageData = paginate(filtered, page, 8)
+  const detailQuery = useSale(detailId)
+  const detail = detailQuery.data?.sale ?? null
+  const products = activeProducts.data?.items ?? []
+  const recentSales = recent.data?.items ?? []
 
-  const successSales = sales.filter((sale) => sale.status === "SUCCESS")
-  const omzet = successSales.reduce((total, sale) => total + sale.total, 0)
-  const grossProfit = successSales.reduce((total, sale) => total + (sale.grossProfit ?? 0), 0)
-  const pendingCount = sales.filter((sale) => sale.status === "PENDING").length
+  const omzet = recentSales
+    .filter((sale) => sale.status === "SUCCESS")
+    .reduce((total, sale) => total + sale.total, 0)
+  const grossProfit = recentSales
+    .filter((sale) => sale.status === "SUCCESS")
+    .reduce((total, sale) => total + (sale.grossProfit ?? 0), 0)
 
   const builderTotal = items.reduce((total, item) => {
     const product = products.find((candidate) => candidate.id === Number(item.productId))
@@ -116,42 +133,74 @@ export default function Sales() {
     setItems((current) => current.filter((_, itemIndex) => itemIndex !== index))
   }
 
-  const onCreate = (event: FormEvent<HTMLFormElement>) => {
+  const onCreate = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    const result = createSale(
-      items.map((item) => ({
-        productId: Number(item.productId),
-        qty: Number(item.qty),
-      })),
-    )
-    notify(result.message ?? (result.ok ? "Penjualan dibuat." : "Gagal."), result.ok ? "success" : "error")
-    if (result.ok) setBuilderOpen(false)
-  }
+    const payload = items.map((item) => ({
+      productId: Number(item.productId),
+      qty: Number(item.qty),
+    }))
 
-  const onConfirm = (sale: Sale) => {
-    const result = confirmSale(sale.id)
-    notify(result.message ?? (result.ok ? "Penjualan dikonfirmasi." : "Gagal."), result.ok ? "success" : "error")
-  }
+    if (payload.some((item) => !item.productId)) {
+      notify("Pilih produk untuk setiap item.", "error")
+      return
+    }
+    if (payload.some((item) => !Number.isInteger(item.qty) || item.qty <= 0)) {
+      notify("Jumlah setiap item harus bilangan bulat lebih dari 0.", "error")
+      return
+    }
+    if (new Set(payload.map((item) => item.productId)).size !== payload.length) {
+      notify("Produk tidak boleh kembar dalam satu penjualan.", "error")
+      return
+    }
 
-  const onDelete = () => {
-    if (!deleting) return
-    const result = deleteSale(deleting.id)
-    notify(result.message ?? (result.ok ? "Penjualan dihapus." : "Gagal."), result.ok ? "success" : "error")
-    if (result.ok) setDeleting(null)
-  }
-
-  const onCancel = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault()
-    if (!cancelling) return
-    const result = cancelSale(cancelling.id, cancelReason)
-    notify(result.message ?? (result.ok ? "Penjualan dibatalkan." : "Gagal."), result.ok ? "success" : "error")
-    if (result.ok) {
-      setCancelling(null)
-      setCancelReason("")
+    try {
+      await createSale.mutateAsync(payload)
+      notify("Penjualan dibuat dengan status pending.", "success")
+      setBuilderOpen(false)
+      setPage(1)
+    } catch (error) {
+      notify(errorMessage(error), "error")
     }
   }
 
-  const columns: Column<Sale>[] = [
+  const onConfirm = async (sale: SaleBase) => {
+    try {
+      await confirmSale.mutateAsync(sale.id)
+      notify(`Penjualan #${sale.id} dikonfirmasi. Stok sudah dipotong.`, "success")
+    } catch (error) {
+      notify(errorMessage(error), "error")
+    }
+  }
+
+  const onDelete = async () => {
+    if (!deleting) return
+    try {
+      await deleteSale.mutateAsync(deleting.id)
+      notify(`Penjualan #${deleting.id} dihapus.`, "success")
+      setDeleting(null)
+    } catch (error) {
+      notify(errorMessage(error), "error")
+    }
+  }
+
+  const onCancel = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!cancelling) return
+    if (!cancelReason.trim()) {
+      notify("Alasan pembatalan wajib diisi.", "error")
+      return
+    }
+    try {
+      await cancelSale.mutateAsync({ id: cancelling.id, reason: cancelReason.trim() })
+      notify(`Penjualan #${cancelling.id} dibatalkan. Stok dikembalikan.`, "success")
+      setCancelling(null)
+      setCancelReason("")
+    } catch (error) {
+      notify(errorMessage(error), "error")
+    }
+  }
+
+  const columns: Column<SaleBase>[] = [
     {
       key: "sale",
       header: "Penjualan",
@@ -167,15 +216,8 @@ export default function Sales() {
       header: "Item",
       render: (sale) => (
         <div>
-          <p className="text-ink">{sale.items.length} produk</p>
-          <p className="mt-0.5 max-w-[220px] truncate text-xs text-ink-soft">
-            {sale.items
-              .map(
-                (item) =>
-                  products.find((product) => product.id === item.productId)?.name ?? "Produk",
-              )
-              .join(", ")}
-          </p>
+          <p className="text-ink">{angka(sale.itemCount)} produk</p>
+          <p className="mt-0.5 text-xs text-ink-soft">oleh {sale.createdBy.name}</p>
         </div>
       ),
     },
@@ -203,7 +245,7 @@ export default function Sales() {
       align: "right",
       render: (sale) => (
         <div className="flex flex-wrap items-center justify-end gap-1.5">
-          <button type="button" onClick={() => setDetail(sale)} className={smallButton}>
+          <button type="button" onClick={() => setDetailId(sale.id)} className={smallButton}>
             <Eye size={13} />
             Detail
           </button>
@@ -212,6 +254,7 @@ export default function Sales() {
               <button
                 type="button"
                 onClick={() => onConfirm(sale)}
+                disabled={confirmSale.isPending}
                 className={smallButton}
               >
                 <CircleCheck size={13} />
@@ -245,6 +288,8 @@ export default function Sales() {
     },
   ]
 
+  const data = list.data
+
   return (
     <div className="rise space-y-6">
       <PageHeader
@@ -268,16 +313,41 @@ export default function Sales() {
       />
 
       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <StatCard label="Total penjualan" value={angka(sales.length)} icon={ShoppingCart} tone="slate" />
-        <StatCard label="Pending" value={angka(pendingCount)} hint="Belum memotong stok" icon={ShoppingCart} tone="amber" />
-        <StatCard label="Omzet sukses" value={rupiah(omzet)} icon={TrendingUp} tone="emerald" />
-        <StatCard label="Laba kotor" value={rupiah(grossProfit)} icon={Wallet} tone="accent" />
+        <StatCard
+          label="Total penjualan"
+          value={angka(data?.total ?? 0)}
+          icon={ShoppingCart}
+          tone="slate"
+        />
+        <StatCard
+          label="Pending"
+          value={angka(pendingCount.data?.total ?? 0)}
+          hint="Belum memotong stok"
+          icon={ShoppingCart}
+          tone="amber"
+        />
+        <StatCard
+          label="Omzet sukses"
+          value={rupiah(omzet)}
+          hint="Dari 100 transaksi terbaru"
+          icon={TrendingUp}
+          tone="emerald"
+        />
+        <StatCard
+          label="Laba kotor"
+          value={rupiah(grossProfit)}
+          hint="Dari 100 transaksi terbaru"
+          icon={Wallet}
+          tone="accent"
+        />
       </section>
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className="text-sm font-semibold text-ink">Daftar penjualan</h2>
-          <p className="mt-0.5 text-xs text-ink-soft">{filtered.length} transaksi</p>
+          <p className="mt-0.5 text-xs text-ink-soft">
+            {angka(data?.total ?? 0)} transaksi
+          </p>
         </div>
         <select
           value={status}
@@ -296,37 +366,45 @@ export default function Sales() {
       </div>
 
       <section className="overflow-hidden rounded-2xl border border-line bg-surface">
-        <DataTable
-          columns={columns}
-          rows={pageData.items}
-          rowKey={(sale) => sale.id}
-          minWidth={820}
-          empty={
-            <EmptyState
-              icon={<ShoppingCart size={24} strokeWidth={1.9} />}
-              title="Belum ada penjualan"
-              description={
-                isManager
-                  ? "Buat penjualan baru untuk mulai mencatat transaksi."
-                  : "Belum ada penjualan yang dicatat manager."
-              }
-              action={
-                isManager ? (
-                  <button type="button" onClick={openBuilder} className={primaryButton}>
-                    <Plus size={15} />
-                    Penjualan baru
-                  </button>
-                ) : undefined
-              }
-            />
-          }
-        />
-        <Pagination
-          page={pageData.page}
-          pageCount={pageData.pageCount}
-          total={pageData.total}
-          onPage={setPage}
-        />
+        {list.isPending ? (
+          <LoadingBlock label="Memuat penjualan..." />
+        ) : list.error ? (
+          <ErrorBlock error={list.error} onRetry={() => void list.refetch()} />
+        ) : (
+          <DataTable
+            columns={columns}
+            rows={data?.items ?? []}
+            rowKey={(sale) => sale.id}
+            minWidth={900}
+            empty={
+              <EmptyState
+                icon={<ShoppingCart size={24} strokeWidth={1.9} />}
+                title="Belum ada penjualan"
+                description={
+                  isManager
+                    ? "Buat penjualan baru untuk mulai mencatat transaksi."
+                    : "Belum ada penjualan yang dicatat manager."
+                }
+                action={
+                  isManager ? (
+                    <button type="button" onClick={openBuilder} className={primaryButton}>
+                      <Plus size={15} />
+                      Penjualan baru
+                    </button>
+                  ) : undefined
+                }
+              />
+            }
+          />
+        )}
+        {data ? (
+          <Pagination
+            page={data.page}
+            pageCount={pageCount(data.total, PAGE_SIZE)}
+            total={data.total}
+            onPage={setPage}
+          />
+        ) : null}
       </section>
 
       <Modal
@@ -340,7 +418,12 @@ export default function Sales() {
             <button type="button" onClick={() => setBuilderOpen(false)} className={secondaryButton}>
               Batal
             </button>
-            <button type="submit" form="sale-form" className={primaryButton}>
+            <button
+              type="submit"
+              form="sale-form"
+              disabled={createSale.isPending}
+              className={primaryButton}
+            >
               Simpan sebagai pending
             </button>
           </>
@@ -349,7 +432,9 @@ export default function Sales() {
         <form id="sale-form" onSubmit={onCreate} className="space-y-4">
           <div className="space-y-3">
             {items.map((item, index) => {
-              const product = products.find((candidate) => candidate.id === Number(item.productId))
+              const product = products.find(
+                (candidate) => candidate.id === Number(item.productId),
+              )
               return (
                 <div
                   key={index}
@@ -363,7 +448,7 @@ export default function Sales() {
                       className={selectClass}
                     >
                       <option value="">Pilih produk</option>
-                      {activeProducts.map((candidate) => (
+                      {products.map((candidate) => (
                         <option key={candidate.id} value={candidate.id}>
                           {candidate.name} · {rupiah(candidate.price)} · stok {candidate.stock}
                         </option>
@@ -416,20 +501,26 @@ export default function Sales() {
       </Modal>
 
       <Modal
-        open={detail !== null}
-        onClose={() => setDetail(null)}
+        open={detailId !== null}
+        onClose={() => setDetailId(null)}
         title={detail ? `Detail penjualan #${detail.id}` : "Detail penjualan"}
         description={
-          detail ? `${tanggalWaktu(detail.createdAt)} · dibuat oleh ${users.find((user) => user.id === detail.createdBy)?.name ?? "—"}` : undefined
+          detail
+            ? `${tanggalWaktu(detail.createdAt)} · dibuat oleh ${detail.createdBy.name}`
+            : undefined
         }
         wide
         footer={
-          <button type="button" onClick={() => setDetail(null)} className={secondaryButton}>
+          <button type="button" onClick={() => setDetailId(null)} className={secondaryButton}>
             Tutup
           </button>
         }
       >
-        {detail ? (
+        {detailQuery.isPending ? (
+          <LoadingBlock label="Memuat detail penjualan..." />
+        ) : detailQuery.error ? (
+          <ErrorBlock error={detailQuery.error} onRetry={() => void detailQuery.refetch()} />
+        ) : detail ? (
           <div className="space-y-4">
             <div className="flex flex-wrap items-center gap-2">
               <Badge tone={statusTone[detail.status]}>{statusLabel[detail.status]}</Badge>
@@ -453,25 +544,22 @@ export default function Sales() {
                   </tr>
                 </thead>
                 <tbody>
-                  {detail.items.map((item) => {
-                    const product = products.find((candidate) => candidate.id === item.productId)
-                    return (
-                      <tr key={item.id} className="border-b border-line/70 last:border-0">
-                        <td className="px-3 py-2.5">
-                          <p className="font-medium text-ink">{product?.name ?? "Produk"}</p>
-                          <p className="text-xs text-ink-soft">{product?.sku ?? "-"}</p>
-                        </td>
-                        <td className="px-3 py-2.5 text-right tabular-nums">{item.qty}</td>
-                        <td className="px-3 py-2.5 text-right tabular-nums">{rupiah(item.price)}</td>
-                        <td className="px-3 py-2.5 text-right tabular-nums">
-                          {item.hppSnapshot === null ? "—" : rupiah(item.hppSnapshot)}
-                        </td>
-                        <td className="px-3 py-2.5 text-right font-semibold tabular-nums">
-                          {rupiah(item.subtotal)}
-                        </td>
-                      </tr>
-                    )
-                  })}
+                  {detail.items.map((item) => (
+                    <tr key={item.id} className="border-b border-line/70 last:border-0">
+                      <td className="px-3 py-2.5">
+                        <p className="font-medium text-ink">{item.product.name}</p>
+                        <p className="text-xs text-ink-soft">{item.product.sku}</p>
+                      </td>
+                      <td className="px-3 py-2.5 text-right tabular-nums">{item.qty}</td>
+                      <td className="px-3 py-2.5 text-right tabular-nums">{rupiah(item.price)}</td>
+                      <td className="px-3 py-2.5 text-right tabular-nums">
+                        {item.hppSnapshot === null ? "—" : rupiah(item.hppSnapshot)}
+                      </td>
+                      <td className="px-3 py-2.5 text-right font-semibold tabular-nums">
+                        {rupiah(item.subtotal)}
+                      </td>
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </div>
@@ -507,7 +595,7 @@ export default function Sales() {
       <ConfirmDialog
         open={deleting !== null}
         onClose={() => setDeleting(null)}
-        onConfirm={onDelete}
+        onConfirm={() => void onDelete()}
         title="Hapus penjualan pending?"
         description="Penjualan pending belum memotong stok, jadi aman dihapus. Tindakan ini tidak bisa dibatalkan."
         confirmLabel="Hapus penjualan"
@@ -527,7 +615,12 @@ export default function Sales() {
             <button type="button" onClick={() => setCancelling(null)} className={secondaryButton}>
               Kembali
             </button>
-            <button type="submit" form="cancel-form" className={dangerButton}>
+            <button
+              type="submit"
+              form="cancel-form"
+              disabled={cancelSale.isPending}
+              className={dangerButton}
+            >
               Batalkan penjualan
             </button>
           </>

@@ -2,6 +2,8 @@ import { useState, type FormEvent } from "react"
 import { Link, Navigate, useNavigate } from "react-router-dom"
 import { ArrowLeft, Boxes, CircleCheck, CircleAlert, Eye, EyeOff, Lock, LogIn, Mail } from "lucide-react"
 import { useAuth } from "../auth/useAuth"
+import { useLogin } from "../api/hooks"
+import { errorMessage } from "../api/client"
 
 const poin = [
     "Stok gudang tercatat otomatis",
@@ -10,28 +12,37 @@ const poin = [
 ]
 
 export default function Login() {
-    const { user, login } = useAuth()
+    const { user, status } = useAuth()
+    const login = useLogin()
     const navigate = useNavigate()
     const [email, setEmail] = useState("")
     const [pw, setPw] = useState("")
     const [lihatPw, setLihatPw] = useState(false)
     const [error, setError] = useState("")
 
-    const onSubmit = (e: FormEvent<HTMLFormElement>) => {
+    const onSubmit = async (e: FormEvent<HTMLFormElement>) => {
         e.preventDefault()
         if (!email.trim() || !pw) {
             setError("Email dan kata sandi wajib diisi.")
             return
         }
-        const result = login(email)
-        if (!result.ok) {
-            setError(result.message)
-            return
-        }
         setError("")
-        navigate(result.role === "OWNER" ? "/owner/dashboard" : "/manager/dashboard", {
-            replace: true,
-        })
+        try {
+            const data = await login.mutateAsync({ email: email.trim(), password: pw })
+            navigate(data.user.role === "OWNER" ? "/owner/dashboard" : "/manager/dashboard", {
+                replace: true,
+            })
+        } catch (err) {
+            setError(errorMessage(err))
+        }
+    }
+
+    if (status === "loading") {
+        return (
+            <div className="grid min-h-dvh place-items-center bg-paper">
+                <span className="size-8 animate-spin rounded-full border-2 border-line border-t-accent" />
+            </div>
+        )
     }
 
     if (user) {
@@ -161,10 +172,11 @@ export default function Login() {
 
                             <button
                                 type="submit"
-                                className="mt-2 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-brand px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-brand-soft"
+                                disabled={login.isPending}
+                                className="mt-2 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-brand px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-brand-soft disabled:cursor-not-allowed disabled:opacity-60"
                             >
                                 <LogIn size={16} />
-                                Masuk
+                                {login.isPending ? "Memproses..." : "Masuk"}
                             </button>
                         </form>
 
@@ -175,7 +187,7 @@ export default function Login() {
                                 <p><span className="font-medium text-ink">manager@demo.com</span> · Manager</p>
                             </div>
                             <p className="mt-2 text-center text-[11px] leading-relaxed text-ink-soft">
-                                Mode mock: kata sandi diabaikan, role ditentukan dari email.
+                                Kata sandi akun demo diberikan terpisah oleh admin.
                             </p>
                         </div>
                     </div>

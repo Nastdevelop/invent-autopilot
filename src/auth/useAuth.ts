@@ -1,10 +1,8 @@
-import { useAppStore } from "../store/useAppStore"
+import { useAuthStore } from "../store/useAuthStore"
 
 export function useAuth() {
-  const user = useAppStore(
-    (state) => state.users.find((candidate) => candidate.id === state.currentUserId) ?? null,
-  )
-  const login = useAppStore((state) => state.login)
-  const logout = useAppStore((state) => state.logout)
-  return { user, login, logout }
+  const user = useAuthStore((state) => state.user)
+  const status = useAuthStore((state) => state.status)
+  const logout = useAuthStore((state) => state.signOut)
+  return { user, status, logout }
 }

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react"
+import { useState } from "react"
 import { ArrowDownLeft, ArrowLeftRight, ArrowUpRight, ClipboardList } from "lucide-react"
 import PageHeader from "../components/PageHeader"
 import StatCard from "../components/StatCard"
@@ -6,11 +6,20 @@ import Badge, { type BadgeTone } from "../components/Badge"
 import DataTable, { type Column } from "../components/DataTable"
 import EmptyState from "../components/EmptyState"
 import Pagination from "../components/Pagination"
-import { movementLabels, useAppStore } from "../store/useAppStore"
+import { ErrorBlock, LoadingBlock } from "../components/QueryFeedback"
+import { useMovements, useProducts } from "../api/hooks"
 import type { MovementType, StockMovement } from "../types/api"
 import { angka, tanggalWaktu } from "../lib/format"
-import { findUser, paginate } from "../lib/selectors"
+import { pageCount } from "../lib/pagination"
 import { selectClass } from "../lib/ui"
+
+const movementLabels: Record<MovementType, string> = {
+  STOCK_IN: "Barang masuk",
+  SALE: "Penjualan",
+  CANCEL_SALE: "Pembatalan",
+  DAMAGED: "Barang rusak",
+  ADJUSTMENT: "Koreksi stok",
+}
 
 const typeTone: Record<MovementType, BadgeTone> = {
   STOCK_IN: "success",
@@ -26,31 +35,27 @@ const referenceLabel: Record<string, string> = {
   ADJUSTMENT: "Adjustment",
 }
 
-export default function Movement() {
-  const movements = useAppStore((state) => state.movements)
-  const products = useAppStore((state) => state.products)
-  const users = useAppStore((state) => state.users)
+const PAGE_SIZE = 10
 
+export default function Movement() {
   const [type, setType] = useState<"ALL" | MovementType>("ALL")
   const [productId, setProductId] = useState("ALL")
   const [page, setPage] = useState(1)
 
-  const filtered = useMemo(
-    () =>
-      movements.filter((movement) => {
-        const matchType = type === "ALL" || movement.type === type
-        const matchProduct =
-          productId === "ALL" || movement.productId === Number(productId)
-        return matchType && matchProduct
-      }),
-    [movements, type, productId],
-  )
-  const pageData = paginate(filtered, page, 10)
+  const productsQuery = useProducts({ limit: 100 })
+  const list = useMovements({
+    type: type === "ALL" ? undefined : type,
+    productId: productId === "ALL" ? undefined : Number(productId),
+    page,
+    limit: PAGE_SIZE,
+  })
 
-  const totalIn = movements
+  const data = list.data
+  const items = data?.items ?? []
+  const totalIn = items
     .filter((movement) => movement.quantityChange > 0)
     .reduce((total, movement) => total + movement.quantityChange, 0)
-  const totalOut = movements
+  const totalOut = items
     .filter((movement) => movement.quantityChange < 0)
     .reduce((total, movement) => total + Math.abs(movement.quantityChange), 0)
 
@@ -75,15 +80,12 @@ export default function Movement() {
     {
       key: "product",
       header: "Produk",
-      render: (movement) => {
-        const product = products.find((candidate) => candidate.id === movement.productId)
-        return (
-          <div>
-            <p className="font-medium text-ink">{product?.name ?? "Produk"}</p>
-            <p className="mt-0.5 text-xs text-ink-soft">{product?.sku ?? "-"}</p>
-          </div>
-        )
-      },
+      render: (movement) => (
+        <div>
+          <p className="font-medium text-ink">{movement.product.name}</p>
+          <p className="mt-0.5 text-xs text-ink-soft">{movement.product.sku}</p>
+        </div>
+      ),
     },
     {
       key: "change",
@@ -116,9 +118,7 @@ export default function Movement() {
     {
       key: "user",
       header: "Oleh",
-      render: (movement) => (
-        <span className="text-ink">{findUser(users, movement.createdBy)?.name ?? "—"}</span>
-      ),
+      render: (movement) => <span className="text-ink">{movement.createdBy.name}</span>,
     },
     {
       key: "reason",
@@ -138,9 +138,26 @@ export default function Movement() {
       />
 
       <section className="grid gap-3 sm:grid-cols-3">
-        <StatCard label="Total catatan" value={angka(movements.length)} icon={ClipboardList} tone="slate" />
-        <StatCard label="Unit masuk" value={angka(totalIn)} icon={ArrowDownLeft} tone="emerald" />
-        <StatCard label="Unit keluar" value={angka(totalOut)} icon={ArrowUpRight} tone="red" />
+        <StatCard
+          label="Total catatan"
+          value={angka(data?.total ?? 0)}
+          icon={ClipboardList}
+          tone="slate"
+        />
+        <StatCard
+          label="Unit masuk"
+          value={angka(totalIn)}
+          hint="Halaman ini"
+          icon={ArrowDownLeft}
+          tone="emerald"
+        />
+        <StatCard
+          label="Unit keluar"
+          value={angka(totalOut)}
+          hint="Halaman ini"
+          icon={ArrowUpRight}
+          tone="red"
+        />
       </section>
 
       <div className="grid gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-center">
@@ -171,7 +188,7 @@ export default function Movement() {
           className={selectClass}
         >
           <option value="ALL">Semua produk</option>
-          {products.map((product) => (
+          {(productsQuery.data?.items ?? []).map((product) => (
             <option key={product.id} value={product.id}>
               {product.name} ({product.sku})
             </option>
@@ -180,30 +197,38 @@ export default function Movement() {
 
         <span className="inline-flex items-center justify-center gap-2 rounded-xl border border-line bg-surface px-4 py-2.5 text-xs font-semibold text-ink-soft">
           <ArrowLeftRight size={15} />
-          {filtered.length} catatan
+          {angka(data?.total ?? 0)} catatan
         </span>
       </div>
 
       <section className="overflow-hidden rounded-2xl border border-line bg-surface">
-        <DataTable
-          columns={columns}
-          rows={pageData.items}
-          rowKey={(movement) => movement.id}
-          minWidth={980}
-          empty={
-            <EmptyState
-              icon={<ArrowLeftRight size={24} strokeWidth={1.9} />}
-              title="Belum ada pergerakan stok"
-              description="Catatan muncul otomatis setelah barang masuk, penjualan, atau adjustment."
-            />
-          }
-        />
-        <Pagination
-          page={pageData.page}
-          pageCount={pageData.pageCount}
-          total={pageData.total}
-          onPage={setPage}
-        />
+        {list.isPending ? (
+          <LoadingBlock label="Memuat riwayat stok..." />
+        ) : list.error ? (
+          <ErrorBlock error={list.error} onRetry={() => void list.refetch()} />
+        ) : (
+          <DataTable
+            columns={columns}
+            rows={items}
+            rowKey={(movement) => movement.id}
+            minWidth={980}
+            empty={
+              <EmptyState
+                icon={<ArrowLeftRight size={24} strokeWidth={1.9} />}
+                title="Belum ada pergerakan stok"
+                description="Catatan muncul otomatis setelah barang masuk, penjualan, atau adjustment."
+              />
+            }
+          />
+        )}
+        {data ? (
+          <Pagination
+            page={data.page}
+            pageCount={pageCount(data.total, PAGE_SIZE)}
+            total={data.total}
+            onPage={setPage}
+          />
+        ) : null}
       </section>
     </div>
   )

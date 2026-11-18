@@ -1,7 +1,7 @@
 import { useEffect } from "react"
 import { createPortal } from "react-dom"
 import { CircleAlert, CircleCheck, Info, X } from "lucide-react"
-import { useAppStore } from "../store/useAppStore"
+import { useToastStore } from "../store/useToastStore"
 
 const tone = {
   success: {
@@ -22,14 +22,14 @@ const tone = {
 }
 
 export default function Toast() {
-  const toast = useAppStore((state) => state.toast)
-  const dismissToast = useAppStore((state) => state.dismissToast)
+  const toast = useToastStore((state) => state.toast)
+  const dismiss = useToastStore((state) => state.dismiss)
 
   useEffect(() => {
     if (!toast) return
-    const timer = window.setTimeout(dismissToast, 3600)
+    const timer = window.setTimeout(dismiss, 4000)
     return () => window.clearTimeout(timer)
-  }, [toast, dismissToast])
+  }, [toast, dismiss])
 
   if (!toast) return null
   const style = tone[toast.tone]
@@ -45,7 +45,7 @@ export default function Toast() {
         <p className="flex-1 leading-relaxed">{toast.message}</p>
         <button
           type="button"
-          onClick={dismissToast}
+          onClick={dismiss}
           aria-label="Tutup notifikasi"
           className="shrink-0 rounded-md p-0.5 opacity-60 transition-opacity hover:opacity-100"
         >

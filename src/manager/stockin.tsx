@@ -1,5 +1,5 @@
-import { useMemo, useState, type FormEvent } from "react"
-import { PackagePlus, Search, Wallet } from "lucide-react"
+import { useState, type FormEvent } from "react"
+import { PackagePlus, Wallet } from "lucide-react"
 import PageHeader from "../components/PageHeader"
 import StatCard from "../components/StatCard"
 import Badge from "../components/Badge"
@@ -7,58 +7,64 @@ import DataTable, { type Column } from "../components/DataTable"
 import EmptyState from "../components/EmptyState"
 import Field from "../components/Field"
 import Pagination from "../components/Pagination"
-import { useAppStore } from "../store/useAppStore"
+import { ErrorBlock, LoadingBlock } from "../components/QueryFeedback"
+import { useCreateStockIn, useProducts, useStockIns } from "../api/hooks"
+import { errorMessage } from "../api/client"
+import { useToastStore } from "../store/useToastStore"
 import type { StockIn } from "../types/api"
 import { angka, rupiah, tanggalWaktu } from "../lib/format"
-import { findUser, paginate } from "../lib/selectors"
+import { pageCount } from "../lib/pagination"
 import { inputClass, primaryButton, selectClass } from "../lib/ui"
 
-export default function Stockin() {
-  const products = useAppStore((state) => state.products)
-  const stockIns = useAppStore((state) => state.stockIns)
-  const users = useAppStore((state) => state.users)
-  const stockIn = useAppStore((state) => state.stockIn)
-  const notify = useAppStore((state) => state.notify)
+const PAGE_SIZE = 8
 
-  const activeProducts = useMemo(
-    () => products.filter((product) => product.status === "ACTIVE"),
-    [products],
-  )
+export default function Stockin() {
+  const notify = useToastStore((state) => state.notify)
+  const createStockIn = useCreateStockIn()
+
+  const activeProducts = useProducts({ status: "ACTIVE", limit: 100 })
+  const stockInsSummary = useStockIns({ page: 1, limit: 100 })
 
   const [productId, setProductId] = useState("")
   const [qty, setQty] = useState("")
   const [unitCost, setUnitCost] = useState("")
-  const [search, setSearch] = useState("")
   const [page, setPage] = useState(1)
 
+  const paged = useStockIns({ page, limit: PAGE_SIZE })
+  const products = activeProducts.data?.items ?? []
   const selected = products.find((product) => product.id === Number(productId))
-  const filtered = useMemo(() => {
-    const query = search.trim().toLowerCase()
-    if (!query) return stockIns
-    return stockIns.filter((item) => {
-      const product = products.find((candidate) => candidate.id === item.productId)
-      return product
-        ? product.name.toLowerCase().includes(query) ||
-            product.sku.toLowerCase().includes(query)
-        : false
-    })
-  }, [stockIns, products, search])
 
-  const pageData = paginate(filtered, page, 8)
-  const totalUnits = stockIns.reduce((total, item) => total + item.qty, 0)
-  const totalValue = stockIns.reduce((total, item) => total + item.qty * item.unitCost, 0)
+  const summary = stockInsSummary.data?.items ?? []
+  const totalUnits = summary.reduce((total, item) => total + item.qty, 0)
+  const totalValue = summary.reduce((total, item) => total + item.qty * item.unitCost, 0)
 
-  const onSubmit = (event: FormEvent<HTMLFormElement>) => {
+  const onSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    const result = stockIn({
-      productId: Number(productId),
-      qty: Number(qty),
-      unitCost: Number(unitCost),
-    })
-    notify(result.message ?? (result.ok ? "Barang masuk dicatat." : "Gagal."), result.ok ? "success" : "error")
-    if (result.ok) {
+    const id = Number(productId)
+    const amount = Number(qty)
+    const cost = Number(unitCost)
+
+    if (!id) {
+      notify("Pilih produk terlebih dahulu.", "error")
+      return
+    }
+    if (!Number.isInteger(amount) || amount <= 0) {
+      notify("Jumlah harus bilangan bulat lebih dari 0.", "error")
+      return
+    }
+    if (!Number.isFinite(cost) || cost < 0) {
+      notify("Harga beli per unit tidak boleh negatif.", "error")
+      return
+    }
+
+    try {
+      await createStockIn.mutateAsync({ productId: id, qty: amount, unitCost: cost })
+      notify("Barang masuk dicatat. Stok dan HPP rata-rata sudah diperbarui.", "success")
       setQty("")
       setUnitCost("")
+      setPage(1)
+    } catch (error) {
+      notify(errorMessage(error), "error")
     }
   }
 
@@ -66,25 +72,18 @@ export default function Stockin() {
     {
       key: "product",
       header: "Produk",
-      render: (item) => {
-        const product = products.find((candidate) => candidate.id === item.productId)
-        return (
-          <div>
-            <p className="font-semibold text-ink">{product?.name ?? "Produk dihapus"}</p>
-            <p className="mt-0.5 text-xs text-ink-soft">{product?.sku ?? "-"}</p>
-          </div>
-        )
-      },
+      render: (item) => (
+        <div>
+          <p className="font-semibold text-ink">{item.product?.name ?? "Produk"}</p>
+          <p className="mt-0.5 text-xs text-ink-soft">{item.product?.sku ?? "-"}</p>
+        </div>
+      ),
     },
     {
       key: "qty",
       header: "Jumlah",
       align: "right",
-      render: (item) => (
-        <Badge tone="success">
-          +{angka(item.qty)} {products.find((product) => product.id === item.productId)?.unit ?? "unit"}
-        </Badge>
-      ),
+      render: (item) => <Badge tone="success">+{angka(item.qty)} unit</Badge>,
     },
     {
       key: "unitCost",
@@ -105,12 +104,14 @@ export default function Stockin() {
       header: "Dicatat oleh",
       render: (item) => (
         <div>
-          <p className="text-ink">{findUser(users, item.createdBy)?.name ?? "—"}</p>
+          <p className="text-ink">{item.createdBy?.name ?? "—"}</p>
           <p className="mt-0.5 text-xs text-ink-soft">{tanggalWaktu(item.createdAt)}</p>
         </div>
       ),
     },
   ]
+
+  const data = paged.data
 
   return (
     <div className="rise space-y-6">
@@ -121,9 +122,26 @@ export default function Stockin() {
       />
 
       <section className="grid gap-3 sm:grid-cols-3">
-        <StatCard label="Transaksi masuk" value={angka(stockIns.length)} icon={PackagePlus} tone="accent" />
-        <StatCard label="Total unit masuk" value={angka(totalUnits)} icon={PackagePlus} tone="sky" />
-        <StatCard label="Nilai pembelian" value={rupiah(totalValue)} icon={Wallet} tone="emerald" />
+        <StatCard
+          label="Transaksi masuk"
+          value={angka(data?.total ?? 0)}
+          icon={PackagePlus}
+          tone="accent"
+        />
+        <StatCard
+          label="Total unit masuk"
+          value={angka(totalUnits)}
+          hint="Dari 100 transaksi terbaru"
+          icon={PackagePlus}
+          tone="sky"
+        />
+        <StatCard
+          label="Nilai pembelian"
+          value={rupiah(totalValue)}
+          hint="Dari 100 transaksi terbaru"
+          icon={Wallet}
+          tone="emerald"
+        />
       </section>
 
       <section className="rounded-2xl border border-line bg-surface p-5 sm:p-6">
@@ -141,7 +159,10 @@ export default function Stockin() {
           ) : null}
         </div>
 
-        <form onSubmit={onSubmit} className="mt-5 grid gap-4 lg:grid-cols-[1.4fr_0.8fr_1fr_auto] lg:items-end">
+        <form
+          onSubmit={onSubmit}
+          className="mt-5 grid gap-4 lg:grid-cols-[1.4fr_0.8fr_1fr_auto] lg:items-end"
+        >
           <Field label="Produk" htmlFor="stockin-product">
             <select
               id="stockin-product"
@@ -150,7 +171,7 @@ export default function Stockin() {
               className={selectClass}
             >
               <option value="">Pilih produk aktif</option>
-              {activeProducts.map((product) => (
+              {products.map((product) => (
                 <option key={product.id} value={product.id}>
                   {product.name} ({product.sku}) · stok {product.stock}
                 </option>
@@ -181,9 +202,13 @@ export default function Stockin() {
               placeholder="50000"
             />
           </Field>
-          <button type="submit" className={`${primaryButton} h-[42px]`}>
+          <button
+            type="submit"
+            disabled={createStockIn.isPending}
+            className={`${primaryButton} h-[42px]`}
+          >
             <PackagePlus size={16} />
-            Simpan
+            {createStockIn.isPending ? "Menyimpan..." : "Simpan"}
           </button>
         </form>
 
@@ -198,49 +223,44 @@ export default function Stockin() {
       </section>
 
       <section className="overflow-hidden rounded-2xl border border-line bg-surface">
-        <div className="flex flex-col gap-3 border-b border-line px-4 py-3.5 sm:flex-row sm:items-center sm:justify-between sm:px-6">
+        <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-3.5 sm:px-6">
           <div>
             <h2 className="text-sm font-semibold text-ink">Riwayat barang masuk</h2>
-            <p className="mt-0.5 text-xs text-ink-soft">{filtered.length} transaksi</p>
+            <p className="mt-0.5 text-xs text-ink-soft">
+              {angka(data?.total ?? 0)} transaksi tercatat
+            </p>
           </div>
-          <div className="relative w-full sm:w-64">
-            <Search
-              size={15}
-              className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-ink-soft/70"
-            />
-            <input
-              type="search"
-              value={search}
-              onChange={(event) => {
-                setSearch(event.target.value)
-                setPage(1)
-              }}
-              placeholder="Cari produk..."
-              aria-label="Cari riwayat barang masuk"
-              className={`${inputClass} py-2 pl-9 text-xs`}
-            />
-          </div>
+          <Badge tone="neutral">Terbaru dulu</Badge>
         </div>
 
-        <DataTable
-          columns={columns}
-          rows={pageData.items}
-          rowKey={(item) => item.id}
-          empty={
-            <EmptyState
-              icon={<PackagePlus size={24} strokeWidth={1.9} />}
-              title="Belum ada barang masuk"
-              description="Catat pembelian pertama lewat form di atas."
-            />
-          }
-        />
+        {paged.isPending ? (
+          <LoadingBlock label="Memuat riwayat barang masuk..." />
+        ) : paged.error ? (
+          <ErrorBlock error={paged.error} onRetry={() => void paged.refetch()} />
+        ) : (
+          <DataTable
+            columns={columns}
+            rows={data?.items ?? []}
+            rowKey={(item) => item.id}
+            minWidth={820}
+            empty={
+              <EmptyState
+                icon={<PackagePlus size={24} strokeWidth={1.9} />}
+                title="Belum ada barang masuk"
+                description="Catat pembelian pertama lewat form di atas."
+              />
+            }
+          />
+        )}
 
-        <Pagination
-          page={pageData.page}
-          pageCount={pageData.pageCount}
-          total={pageData.total}
-          onPage={setPage}
-        />
+        {data ? (
+          <Pagination
+            page={data.page}
+            pageCount={pageCount(data.total, PAGE_SIZE)}
+            total={data.total}
+            onPage={setPage}
+          />
+        ) : null}
       </section>
     </div>
   )
